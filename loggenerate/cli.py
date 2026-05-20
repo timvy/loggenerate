@@ -33,9 +33,12 @@ Examples:
 
 Supported log types per application:
   generic   — (no --log-type needed)
-  paloalto  — traffic, threat, system, config
+  paloalto  — traffic, threat, system, config, globalprotect
   f5        — ltm, asm, apm
   fortinet  — traffic, utm, event
+
+GlobalProtect CEF example (Strata Logging Service format):
+  python -m loggenerate --app paloalto --log-type globalprotect --format cef --count 5
 
 Syslog facilities (--facility):
   0=kern  1=user  2=mail  3=daemon  4=auth  5=syslog
@@ -67,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     gen.add_argument(
         "--format",
-        choices=["rfc3164", "rfc5424"],
+        choices=["rfc3164", "rfc5424", "cef"],
         default="rfc5424",
         help="Syslog message format (default: rfc5424)",
     )

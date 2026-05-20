@@ -48,6 +48,33 @@ _SESSION_END_REASONS = [
     "tcp-rst-from-client", "tcp-rst-from-server",
     "resources-unavailable",
 ]
+_GP_PORTALS = ["corp-portal", "remote-portal", "vpn-portal", "staff-portal"]
+_GP_GATEWAYS = [
+    "us-west-gw", "us-east-gw", "eu-central-gw", "apac-gw",
+    "corp-gateway", "dc-gateway-01",
+]
+_GP_AUTH_METHODS = ["LDAP", "SAML 2.0", "Kerberos", "certificate"]
+_GP_TUNNEL_TYPES = ["IPSec", "SSL"]
+_GP_OS_TYPES = [
+    ("Windows", "Windows 11 22H2"),
+    ("Windows", "Windows 10 21H2"),
+    ("macOS", "macOS 14.1"),
+    ("iOS", "iOS 17.1"),
+    ("Android", "Android 13"),
+]
+_GP_CLIENT_VERSIONS = ["5.2.9", "5.3.0", "6.0.1", "6.1.2"]
+_GP_ENDPOINTS = [
+    "CORP-WS-1001", "CORP-WS-1002", "CORP-WS-1003", "CORP-WS-1004",
+    "CORP-NB-0042", "CORP-NB-0043", "CORP-NB-0044",
+    "LAPTOP-AB1234", "LAPTOP-CD5678", "LAPTOP-EF9012",
+    "MAC-ALICE", "MAC-BOB", "MAC-CHARLIE",
+]
+_GP_CONN_ERRORS = [
+    "Authentication failed: Invalid username or password",
+    "Pre-login authentication failed",
+    "Gateway certificate validation failed",
+    "Client certificate authentication failed",
+]
 _URL_CATEGORIES = [
     "shopping", "news", "social-networking",
     "business-and-economy", "computer-and-internet-info",
@@ -291,8 +318,106 @@ def _config_log(dt, serial) -> tuple:
     return 5, ",".join(fields)
 
 
+def _gp_log(dt, serial, hostname) -> tuple:
+    """Returns (severity, cef_extension_string).
+
+    Generates a GlobalProtect event in Strata Logging Service CEF extension format.
+    Reference: https://docs.paloaltonetworks.com/strata-logging-service/log-reference/
+               network-logs/network-globalprotect-log/network-globalprotect-cef-fields
+    """
+    stage = random.choice(["connected", "disconnected", "login", "auth-error"])
+    is_success = stage != "auth-error"
+    outcome = "success" if is_success else "failure"
+    sev = 6 if is_success else 4  # info / warning
+
+    user = rand_user("corp")
+    user_domain, user_name = user.split("\\", 1) if "\\" in user else ("", user)
+    public_ip = rand_public_ip()
+    vsys = random.choice(_VSYS)
+    endpoint = random.choice(_GP_ENDPOINTS)
+    os_type, os_version = random.choice(_GP_OS_TYPES)
+    portal = random.choice(_GP_PORTALS)
+    gateway = random.choice(_GP_GATEWAYS)
+    auth_method = random.choice(_GP_AUTH_METHODS)
+    country = rand_country()
+    seq = random.randint(1_000_000_000, 9_999_999_999)
+    profile_token = "".join(random.choices(
+        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", k=24,
+    ))
+    tenant_id = "".join(random.choices("0123456789abcdef", k=16))
+    host_id = (
+        f"{random.randint(0, 0xffffffff):08x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffffffffffff):012x}"
+    )
+    hires_ts = dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}+00:00"
+    cef_ts = dt.strftime("%b %d %Y %H:%M:%S")
+
+    def p(k, v):
+        esc = str(v).replace("\\", "\\\\").replace("=", "\\=").replace("\n", "\\n")
+        return f"{k}={esc}"
+
+    fields = [
+        p("ProfileToken", profile_token),
+        "dtz=UTC",
+        p("rt", cef_ts),
+        p("deviceExternalID", serial),
+        p("PanOSDGHierarchyLevel1", random.randint(100, 9999)),
+        "PanOSDGHierarchyLevel2=0",
+        "PanOSDGHierarchyLevel3=0",
+        "PanOSDGHierarchyLevel4=0",
+        p("dvchost", hostname),
+        "sourceServiceName=globalprotect",
+        p("PanOSVirtualSystem", vsys),
+        p("cs3", vsys),
+        "cs3Label=vsys_name",
+        p("start", cef_ts),
+        p("PanOSTimeGeneratedHighResolution", hires_ts),
+        p("shost", endpoint),
+        p("suser", user),
+        p("sntdom", user_domain),
+        p("susername", user_name),
+        "PanOSLogSubtype=globalprotect",
+        p("Name", stage),
+        p("PanOSStage", stage),
+        p("outcome", outcome),
+        p("src", public_ip),
+        p("PanOSSourceRegion", country),
+        p("PanOSPortal", portal),
+        p("PanOSAuthMethod", auth_method),
+        p("PanOSGlobalProtectClientVersion", random.choice(_GP_CLIENT_VERSIONS)),
+        p("PanOSEndpointOSType", os_type),
+        p("PanOSEndpointOSVersion", os_version),
+        p("PanOSHostID", host_id),
+        p("PanOSSequenceNo", seq),
+        p("PanOSTenantID", tenant_id),
+    ]
+
+    if stage in ("connected", "disconnected"):
+        fields += [
+            p("PanOSTunnelType", random.choice(_GP_TUNNEL_TYPES)),
+            p("PanOSGateway", gateway),
+            p("PanOSPrivateIPv4", rand_private_ip()),
+            p("PanOSGatewayPriority", random.randint(1, 3)),
+            p("PanOSGatewaySelectionType", random.choice(["automatic", "manual"])),
+        ]
+
+    if stage == "disconnected":
+        fields.append(p("PanOSLoginDuration", random.randint(60, 86400)))
+
+    if stage == "auth-error":
+        fields += [
+            p("PanOSConnectionError", random.choice(_GP_CONN_ERRORS)),
+            p("PanOSConnectionErrorID", random.randint(1, 20)),
+        ]
+
+    return sev, " ".join(fields)
+
+
 class PaloAltoGenerator(BaseAppGenerator):
-    LOG_TYPES = ["traffic", "threat", "system", "config"]
+    LOG_TYPES = ["traffic", "threat", "system", "config", "globalprotect"]
 
     def generate(
         self,
@@ -313,10 +438,11 @@ class PaloAltoGenerator(BaseAppGenerator):
         dst_port = rand_well_known_port()
 
         generators = {
-            "traffic": lambda: _traffic_log(dt, serial, src_ip, dst_ip, src_port, dst_port),
-            "threat":  lambda: _threat_log(dt, serial, src_ip, dst_ip, src_port, dst_port),
-            "system":  lambda: _system_log(dt, serial),
-            "config":  lambda: _config_log(dt, serial),
+            "traffic":       lambda: _traffic_log(dt, serial, src_ip, dst_ip, src_port, dst_port),
+            "threat":        lambda: _threat_log(dt, serial, src_ip, dst_ip, src_port, dst_port),
+            "system":        lambda: _system_log(dt, serial),
+            "config":        lambda: _config_log(dt, serial),
+            "globalprotect": lambda: _gp_log(dt, serial, host),
         }
         if log_type not in generators:
             raise ValueError(
@@ -331,7 +457,7 @@ class PaloAltoGenerator(BaseAppGenerator):
             body_app = None
         sev = severity if severity is not None else default_sev
 
-        # Structured data mirrors the most useful CSV fields for RFC 5424 consumers
+        # Structured data for RFC 5424 consumers; not used for CEF (extension carries this)
         sd = {}
         if log_type in ("traffic", "threat"):
             sd = {
@@ -343,12 +469,15 @@ class PaloAltoGenerator(BaseAppGenerator):
                 }
             }
 
+        # GlobalProtect logs originate from Strata Logging Service, not PAN-OS directly
+        app_name_val = "LF" if log_type == "globalprotect" else "PAN-OS"
+
         return SyslogMessage(
             facility=fac,
             severity=sev,
             timestamp=dt,
             hostname=host,
-            app_name="PAN-OS",
+            app_name=app_name_val,
             proc_id="-",
             msg_id=log_type.upper(),
             structured_data=sd,

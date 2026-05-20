@@ -11,6 +11,9 @@ python3 -m loggenerate --app paloalto --log-type traffic --format rfc3164 --coun
 python3 -m loggenerate --app f5 --log-type ltm --count 5
 python3 -m loggenerate --app fortinet --log-type utm --count 5
 
+# GlobalProtect CEF (Strata Logging Service format)
+python3 -m loggenerate --app paloalto --log-type globalprotect --format cef --count 5
+
 # Reproducible output
 python3 -m loggenerate --app paloalto --count 3 --seed 42
 
@@ -38,7 +41,7 @@ The message body is the **raw vendor CSV or key=value string** — not a human-r
 **PAN-OS traffic logs** return a 3-tuple `(severity, body, app_name)` from `_traffic_log` and `_threat_log` so the caller can use the same `app_name` in both the CSV body (field 15) and the RFC 5424 structured data. System and config logs return 2-tuples. The traffic CSV follows the PAN-OS 10.2+ 118-field schema: 47 core fields + 5 DGH fields + device name (field 53) + 50 extended fields + high-res ISO 8601 timestamp (field 104) + 14 trailing fields.
 
 ### Formatters (`formats/`)
-Pure functions `format_message(SyslogMessage) -> str`. RFC 3164 omits year from timestamp and ignores `structured_data`. RFC 5424 uses millisecond-precision UTC timestamps with `Z` suffix.
+Pure functions `format_message(SyslogMessage) -> str`. RFC 3164 omits year from timestamp and ignores `structured_data`. RFC 5424 uses millisecond-precision UTC timestamps with `Z` suffix. The CEF formatter builds `CEF:0|Palo Alto Networks|{app_name}|2.0|{msg_id}|{msg_id.lower()}|{cef_sev}|{message}` — the generator is responsible for pre-building the full CEF extension string (key=value pairs) in `SyslogMessage.message`; syslog severity is mapped to CEF severity (0–10) by the formatter.
 
 ### Senders (`senders/`)
 Context managers inheriting `BaseSender`. `BaseSender.frame()` handles RFC 6587 octet-counting vs newline framing. `NetworkSender` supports UDP, TCP, and TLS (with optional client cert and CA override).
@@ -51,6 +54,10 @@ All randomised primitives live here: IP pools, application names, user names, po
 1. Create `loggenerate/apps/<name>.py` with a class subclassing `BaseAppGenerator`.
 2. Register it in `loggenerate/apps/__init__.py` under `_GENERATORS`.
 3. Add `--app` choice in `cli.py`'s `build_parser()`.
+
+## GlobalProtect CEF notes
+
+GlobalProtect events use `--format cef` and `--log-type globalprotect`. The generator sets `app_name="LF"` (Strata Logging Service) and `msg_id="GLOBALPROTECT"` so the CEF header reads `CEF:0|Palo Alto Networks|LF|2.0|GLOBALPROTECT|globalprotect|…`. The extension is pre-built in `_gp_log()` as a space-separated key=value string per the SLS CEF field reference. Stages generated: `connected`, `disconnected`, `login`, `auth-error` — stage-specific fields (`PanOSTunnelType`, `PanOSGateway`, `PanOSPrivateIPv4`, `PanOSLoginDuration`, `PanOSConnectionError`) are appended only for the relevant stage. Backslashes in `suser` (e.g. `corp\alice`) are escaped to `\\` per CEF spec.
 
 ## PAN-OS CSV field notes
 
