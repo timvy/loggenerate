@@ -151,6 +151,20 @@ def main() -> None:
     if args.octet_framing and args.protocol == "udp":
         parser.error("--octet-framing is not supported with UDP (RFC 6587 §3.3)")
 
+    _CEF_LOG_TYPES = {"globalprotect", "sls-traffic"}
+    if args.format == "cef":
+        if args.app != "paloalto":
+            parser.error("--format cef is only supported with --app paloalto")
+        if args.log_type and args.log_type not in _CEF_LOG_TYPES:
+            parser.error(
+                f"--log-type '{args.log_type}' does not produce CEF output; "
+                f"use globalprotect or sls-traffic with --format cef"
+            )
+    if args.log_type in _CEF_LOG_TYPES and args.format != "cef":
+        parser.error(
+            f"--log-type {args.log_type} produces CEF output; add --format cef"
+        )
+
     if args.seed is not None:
         random.seed(args.seed)
 

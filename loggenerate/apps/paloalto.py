@@ -85,6 +85,20 @@ _APP_CATEGORY_DEFAULT = ("unknown", "unknown", 2)
 
 _PANORAMA_SERIALS = ["001234567890", "001234567891", "PA-PAN-SRV-01"]
 _LOG_PROFILES = ["default", "prod-logs", "sec-ops-logs", "Panorama"]
+_PAN_OS_VERSIONS = ["10.2", "11.0", "11.1", "11.2"]
+_SLS_CEF_SEV = {0: 10, 1: 9, 2: 8, 3: 7, 4: 6, 5: 5, 6: 3, 7: 1}
+
+
+def _rand_logfwd_hostname() -> str:
+    uuid_part = (
+        f"{random.randint(0, 0xffffffff):08x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffffffffffff):012x}"
+    )
+    suffix = "".join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=5))
+    return f"logfwd20-{uuid_part}-taskmanager-{suffix}"
 
 _GP_PORTALS = ["corp-portal", "remote-portal", "vpn-portal", "staff-portal"]
 _GP_GATEWAYS = [
@@ -415,9 +429,6 @@ def _sls_traffic_log(dt, serial, hostname, src_ip, dst_ip, src_port, dst_port) -
         f"{random.randint(0, 0xffff):04x}-"
         f"{random.randint(0, 0xffffffffffff):012x}"
     )
-    profile_token = "".join(random.choices(
-        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", k=24,
-    ))
     hires_ts = dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}+00:00"
     cef_ts = dt.strftime("%b %d %Y %H:%M:%S")
 
@@ -426,10 +437,10 @@ def _sls_traffic_log(dt, serial, hostname, src_ip, dst_ip, src_port, dst_port) -
         return f"{k}={esc}"
 
     fields = [
-        p("ProfileToken", profile_token),
         "dtz=UTC",
         p("rt", cef_ts),
         p("deviceExternalId", serial),
+        p("PanOSConfigVersion", random.choice(_PAN_OS_VERSIONS)),
         p("PanOSDGHierarchyLevel1", random.randint(100, 9999)),
         "PanOSDGHierarchyLevel2=0",
         "PanOSDGHierarchyLevel3=0",
@@ -492,7 +503,8 @@ def _sls_traffic_log(dt, serial, hostname, src_ip, dst_ip, src_port, dst_port) -
         p("PanOSRuleUUID", rule_uuid),
         "PanOSLogSource=firewall",
     ]
-    return sev, " ".join(fields), subtype
+    cef_sev = _SLS_CEF_SEV.get(sev, 3)
+    return sev, f"CEF:0|Palo Alto Networks|LF|2.0|TRAFFIC|{subtype}|{cef_sev}|{' '.join(fields)}"
 
 
 def _gp_log(dt, serial, hostname) -> tuple:
@@ -518,9 +530,6 @@ def _gp_log(dt, serial, hostname) -> tuple:
     auth_method = random.choice(_GP_AUTH_METHODS)
     country = rand_country()
     seq = random.randint(1_000_000_000, 9_999_999_999)
-    profile_token = "".join(random.choices(
-        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", k=24,
-    ))
     tenant_id = "".join(random.choices("0123456789abcdef", k=16))
     host_id = (
         f"{random.randint(0, 0xffffffff):08x}-"
@@ -537,10 +546,10 @@ def _gp_log(dt, serial, hostname) -> tuple:
         return f"{k}={esc}"
 
     fields = [
-        p("ProfileToken", profile_token),
         "dtz=UTC",
         p("rt", cef_ts),
         p("deviceExternalID", serial),
+        p("PanOSConfigVersion", random.choice(_PAN_OS_VERSIONS)),
         p("PanOSDGHierarchyLevel1", random.randint(100, 9999)),
         "PanOSDGHierarchyLevel2=0",
         "PanOSDGHierarchyLevel3=0",
@@ -590,7 +599,8 @@ def _gp_log(dt, serial, hostname) -> tuple:
             p("PanOSConnectionErrorID", random.randint(1, 20)),
         ]
 
-    return sev, " ".join(fields)
+    cef_sev = _SLS_CEF_SEV.get(sev, 3)
+    return sev, f"CEF:0|Palo Alto Networks|LF|2.0|GLOBALPROTECT|globalprotect|{cef_sev}|{' '.join(fields)}"
 
 
 class PaloAltoGenerator(BaseAppGenerator):
@@ -605,9 +615,15 @@ class PaloAltoGenerator(BaseAppGenerator):
     ) -> SyslogMessage:
         dt = now_utc()
         serial = random.choice(_SERIALS)
-        host = hostname or random.choice(_HOSTNAMES)
-        fac = facility if facility is not None else 16  # local0
         log_type = log_type or random.choice(self.LOG_TYPES)
+        is_sls = log_type in ("globalprotect", "sls-traffic")
+
+        if is_sls:
+            host = hostname or _rand_logfwd_hostname()
+            fac = facility if facility is not None else 1   # user
+        else:
+            host = hostname or random.choice(_HOSTNAMES)
+            fac = facility if facility is not None else 16  # local0
 
         src_ip = rand_private_ip()
         dst_ip = rand_public_ip()
@@ -628,7 +644,6 @@ class PaloAltoGenerator(BaseAppGenerator):
             )
 
         result = generators[log_type]()
-        body_app = None
         sd = {}
 
         if log_type in ("traffic", "threat"):
@@ -641,17 +656,17 @@ class PaloAltoGenerator(BaseAppGenerator):
                     "app": body_app,
                 }
             }
-        elif log_type == "sls-traffic":
-            default_sev, body, subtype = result
-            sd = {"_cef": {"name": subtype}}
         else:
             default_sev, body = result
 
         sev = severity if severity is not None else default_sev
 
-        # SLS log types originate from Strata Logging Service, not PAN-OS directly
-        app_name_val = "LF" if log_type in ("globalprotect", "sls-traffic") else "PAN-OS"
-        msg_id_val = "TRAFFIC" if log_type == "sls-traffic" else log_type.upper()
+        if is_sls:
+            app_name_val = "logforwarder"
+            msg_id_val = "panwlogs"
+        else:
+            app_name_val = "PAN-OS"
+            msg_id_val = log_type.upper()
 
         return SyslogMessage(
             facility=fac,

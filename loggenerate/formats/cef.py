@@ -1,25 +1,12 @@
 from loggenerate.models import SyslogMessage
 
-_SYSLOG_TO_CEF_SEV = {0: 10, 1: 9, 2: 8, 3: 7, 4: 6, 5: 5, 6: 3, 7: 1}
-
-
-def _escape_header(v: str) -> str:
-    return v.replace("\\", "\\\\").replace("|", "\\|")
-
 
 def format_message(msg: SyslogMessage) -> str:
-    """
-    CEF:0|Vendor|Product|Version|EventClassID|Name|Severity|Extension
-    msg.app_name            → Device Product  (e.g. "LF" for Strata Logging Service)
-    msg.msg_id              → Device Event Class ID  (e.g. "TRAFFIC", "GLOBALPROTECT")
-    msg.structured_data     → optional {"_cef": {"name": "end"}} overrides the header Name
-                              field (sub_type); defaults to msg_id.lower()
-    msg.message             → pre-built extension key=value string (built by the generator)
-    """
-    cef_sev = _SYSLOG_TO_CEF_SEV.get(msg.severity, 3)
-    vendor = _escape_header("Palo Alto Networks")
-    product = _escape_header(msg.app_name or "LF")
-    event_class = _escape_header(msg.msg_id or "-")
-    name_override = msg.structured_data.get("_cef", {}).get("name")
-    name = _escape_header(name_override or (msg.msg_id or "-").lower())
-    return f"CEF:0|{vendor}|{product}|2.0|{event_class}|{name}|{cef_sev}|{msg.message}"
+    """Wraps a pre-built CEF line (msg.message) in an RFC 5424 syslog envelope."""
+    pri = (msg.facility * 8) + msg.severity
+    ts = msg.timestamp.strftime("%Y-%m-%dT%H:%M:%S.") + f"{msg.timestamp.microsecond // 1000:03d}Z"
+    hostname = msg.hostname or "-"
+    app_name = msg.app_name or "-"
+    proc_id = msg.proc_id or "-"
+    msg_id = msg.msg_id or "-"
+    return f"<{pri}>1 {ts} {hostname} {app_name} {proc_id} {msg_id} - {msg.message}"
