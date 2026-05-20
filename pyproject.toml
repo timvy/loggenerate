@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "loggenerate"
+version = "1.0.0"
+description = "Realistic syslog message generator supporting RFC 3164, RFC 5424, and vendor-specific formats"
+requires-python = ">=3.8"
+dependencies = []
+
+[project.scripts]
+loggenerate = "loggenerate.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
