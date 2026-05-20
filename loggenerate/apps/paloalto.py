@@ -107,6 +107,18 @@ _GP_GATEWAYS = [
 ]
 _GP_AUTH_METHODS = ["LDAP", "SAML 2.0", "Kerberos", "certificate"]
 _GP_TUNNEL_TYPES = ["IPSec", "SSL"]
+_GP_CONNECT_METHODS = ["user-logon", "pre-logon", "on-demand"]
+# (event_id, stage, status) — stage: before-login | login | tunnel
+_GP_EVENTS = [
+    ("connected",                "tunnel", "success"),
+    ("disconnected",             "tunnel", "success"),
+    ("tunnel-terminated",        "tunnel", "success"),
+    ("login",                    "login",  "success"),
+    ("logout",                   "login",  "success"),
+    ("auth-error",               "login",  "failure"),
+    ("gateway-connection-failed","tunnel", "failure"),
+    ("tunnel-setup-failed",      "tunnel", "failure"),
+]
 _GP_OS_TYPES = [
     ("Windows", "Windows 11 22H2"),
     ("Windows", "Windows 10 21H2"),
@@ -370,6 +382,97 @@ def _config_log(dt, serial) -> tuple:
     return 5, ",".join(fields)
 
 
+def _gp_classic_log(dt, serial, hostname) -> tuple:
+    """Returns (severity, message_body). Classic PAN-OS GlobalProtect syslog CSV (50 fields).
+
+    Reference: PAN-OS GlobalProtect Log Fields
+    https://docs.paloaltonetworks.com/ngfw/administration/monitoring/use-syslog-for-monitoring/
+    syslog-field-descriptions/globalprotect-log-fields
+    """
+    event_id, stage, status = random.choice(_GP_EVENTS)
+    is_success = status == "success"
+    sev = 6 if is_success else 4
+
+    user = rand_user("corp")
+    public_ip = rand_public_ip()
+    private_ip = rand_private_ip() if (stage == "tunnel" and is_success) else ""
+    vsys = random.choice(_VSYS)
+    endpoint = random.choice(_GP_ENDPOINTS)
+    os_type, os_version = random.choice(_GP_OS_TYPES)
+    portal = random.choice(_GP_PORTALS)
+    gateway = random.choice(_GP_GATEWAYS)
+    country = rand_country()
+    auth_method = random.choice(_GP_AUTH_METHODS)
+    tunnel_type = random.choice(_GP_TUNNEL_TYPES) if stage == "tunnel" else ""
+    connect_method = random.choice(_GP_CONNECT_METHODS)
+    seq = random.randint(1_000_000_000, 9_999_999_999)
+    login_duration = random.randint(60, 86400) if event_id == "disconnected" else 0
+    error = random.choice(_GP_CONN_ERRORS) if not is_success else ""
+    error_code = str(random.randint(1, 20)) if not is_success else "0"
+    host_id = (
+        f"{random.randint(0, 0xffffffff):08x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffffffffffff):012x}"
+    )
+    hires_ts = dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}+00:00"
+
+    fields = [
+        "1",                                    # 1:  FUTURE_USE
+        pan_timestamp(dt),                      # 2:  Receive Time
+        serial,                                 # 3:  Serial Number
+        "GLOBALPROTECT",                        # 4:  Type
+        "globalprotect",                        # 5:  Subtype
+        "",                                     # 6:  FUTURE_USE
+        pan_timestamp(dt),                      # 7:  Generated Time
+        vsys,                                   # 8:  Virtual System
+        event_id,                               # 9:  Event ID
+        stage,                                  # 10: Stage
+        auth_method,                            # 11: Authentication Method
+        tunnel_type,                            # 12: Tunnel Type
+        user,                                   # 13: Source User
+        country,                                # 14: Source Region
+        endpoint,                               # 15: Machine Name
+        public_ip,                              # 16: Public IP
+        "",                                     # 17: Public IPv6
+        private_ip,                             # 18: Private IP
+        "",                                     # 19: Private IPv6
+        host_id,                                # 20: Host ID
+        "",                                     # 21: Serial Number (client device)
+        random.choice(_GP_CLIENT_VERSIONS),     # 22: Client Version
+        os_type,                                # 23: Client OS
+        os_version,                             # 24: Client OS Version
+        "1",                                    # 25: Repeat Count
+        "",                                     # 26: Reason
+        error,                                  # 27: Error
+        "",                                     # 28: Description
+        status,                                 # 29: Status
+        country,                                # 30: Location
+        str(login_duration),                    # 31: Login Duration
+        connect_method,                         # 32: Connect Method
+        error_code,                             # 33: Error Code
+        portal,                                 # 34: Portal
+        str(seq),                               # 35: Sequence Number
+        "0x0",                                  # 36: Action Flags
+        hires_ts,                               # 37: High Res Timestamp
+        random.choice(["automatic", "manual", "preferred"]),  # 38: Selection Type
+        str(random.randint(0, 500)),            # 39: SSL Response Time (ms)
+        str(random.randint(1, 3)),              # 40: Gateway Priority
+        gateway,                                # 41: Attempted Gateways
+        gateway,                                # 42: Gateway Name
+        str(random.randint(100, 9999)),         # 43: DG Hierarchy Level 1
+        "0",                                    # 44: DG Hierarchy Level 2
+        "0",                                    # 45: DG Hierarchy Level 3
+        "0",                                    # 46: DG Hierarchy Level 4
+        vsys,                                   # 47: Virtual System Name
+        hostname,                               # 48: Device Name
+        "1",                                    # 49: Virtual System ID
+        "",                                     # 50: Cluster Name
+    ]
+    return sev, ",".join(fields)
+
+
 def _sls_traffic_log(dt, serial, hostname, src_ip, dst_ip, src_port, dst_port) -> tuple:
     """Returns (severity, cef_extension_string, sub_type).
 
@@ -507,7 +610,7 @@ def _sls_traffic_log(dt, serial, hostname, src_ip, dst_ip, src_port, dst_port) -
     return sev, f"CEF:0|Palo Alto Networks|LF|2.0|TRAFFIC|{subtype}|{cef_sev}|{' '.join(fields)}"
 
 
-def _gp_log(dt, serial, hostname) -> tuple:
+def _sls_gp_log(dt, serial, hostname) -> tuple:
     """Returns (severity, cef_extension_string).
 
     Generates a GlobalProtect event in Strata Logging Service CEF extension format.
@@ -604,7 +707,9 @@ def _gp_log(dt, serial, hostname) -> tuple:
 
 
 class PaloAltoGenerator(BaseAppGenerator):
-    LOG_TYPES = ["traffic", "threat", "system", "config", "globalprotect", "sls-traffic"]
+    LOG_TYPES = ["traffic", "threat", "system", "config", "globalprotect", "sls-globalprotect", "sls-traffic"]
+    # sls-* types output CEF and must be explicitly requested; exclude from random pool
+    _RANDOM_LOG_TYPES = ["traffic", "threat", "system", "config", "globalprotect"]
 
     def generate(
         self,
@@ -615,8 +720,8 @@ class PaloAltoGenerator(BaseAppGenerator):
     ) -> SyslogMessage:
         dt = now_utc()
         serial = random.choice(_SERIALS)
-        log_type = log_type or random.choice(self.LOG_TYPES)
-        is_sls = log_type in ("globalprotect", "sls-traffic")
+        log_type = log_type or random.choice(self._RANDOM_LOG_TYPES)
+        is_sls = log_type in ("sls-globalprotect", "sls-traffic")
 
         if is_sls:
             host = hostname or _rand_logfwd_hostname()
@@ -635,8 +740,9 @@ class PaloAltoGenerator(BaseAppGenerator):
             "threat":        lambda: _threat_log(dt, serial, src_ip, dst_ip, src_port, dst_port),
             "system":        lambda: _system_log(dt, serial),
             "config":        lambda: _config_log(dt, serial),
-            "globalprotect": lambda: _gp_log(dt, serial, host),
-            "sls-traffic":   lambda: _sls_traffic_log(dt, serial, host, src_ip, dst_ip, src_port, dst_port),
+            "globalprotect":     lambda: _gp_classic_log(dt, serial, host),
+            "sls-globalprotect": lambda: _sls_gp_log(dt, serial, host),
+            "sls-traffic":       lambda: _sls_traffic_log(dt, serial, host, src_ip, dst_ip, src_port, dst_port),
         }
         if log_type not in generators:
             raise ValueError(

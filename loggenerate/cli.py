@@ -38,7 +38,7 @@ Supported log types per application:
   fortinet  — traffic, utm, event
 
 Strata Logging Service (SLS) CEF log types — use with --format cef:
-  python -m loggenerate --app paloalto --log-type globalprotect --format cef --count 5
+  python -m loggenerate --app paloalto --log-type sls-globalprotect --format cef --count 5
   python -m loggenerate --app paloalto --log-type sls-traffic --format cef --count 5
 
 Syslog facilities (--facility):
@@ -151,14 +151,14 @@ def main() -> None:
     if args.octet_framing and args.protocol == "udp":
         parser.error("--octet-framing is not supported with UDP (RFC 6587 §3.3)")
 
-    _CEF_LOG_TYPES = {"globalprotect", "sls-traffic"}
+    _CEF_LOG_TYPES = {"sls-globalprotect", "sls-traffic"}
     if args.format == "cef":
         if args.app != "paloalto":
             parser.error("--format cef is only supported with --app paloalto")
         if args.log_type and args.log_type not in _CEF_LOG_TYPES:
             parser.error(
                 f"--log-type '{args.log_type}' does not produce CEF output; "
-                f"use globalprotect or sls-traffic with --format cef"
+                f"use sls-globalprotect or sls-traffic with --format cef"
             )
     if args.log_type in _CEF_LOG_TYPES and args.format != "cef":
         parser.error(

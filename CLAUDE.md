@@ -11,8 +11,12 @@ python3 -m loggenerate --app paloalto --log-type traffic --format rfc3164 --coun
 python3 -m loggenerate --app f5 --log-type ltm --count 5
 python3 -m loggenerate --app fortinet --log-type utm --count 5
 
+# Classic PAN-OS GlobalProtect log
+python3 -m loggenerate --app paloalto --log-type globalprotect --format rfc5424 --count 5
+python3 -m loggenerate --app paloalto --log-type globalprotect --format rfc3164 --count 5
+
 # Strata Logging Service (SLS) CEF log types
-python3 -m loggenerate --app paloalto --log-type globalprotect --format cef --count 5
+python3 -m loggenerate --app paloalto --log-type sls-globalprotect --format cef --count 5
 python3 -m loggenerate --app paloalto --log-type sls-traffic --format cef --count 5
 
 # Reproducible output
@@ -56,11 +60,15 @@ All randomised primitives live here: IP pools, application names, user names, po
 2. Register it in `loggenerate/apps/__init__.py` under `_GENERATORS`.
 3. Add `--app` choice in `cli.py`'s `build_parser()`.
 
-## SLS CEF log types (globalprotect, sls-traffic)
+## Classic PAN-OS GlobalProtect log type (globalprotect)
 
-Both types set `app_name="LF"` and use `--format cef`. The CEF formatter builds the header as `CEF:0|Palo Alto Networks|LF|2.0|{msg_id}|{name}|{sev}|{extension}`. The `name` field in the header (the 6th pipe-delimited field) defaults to `msg_id.lower()` but can be overridden via `structured_data["_cef"]["name"]` — used by `sls-traffic` to set the sub_type ("end"/"start"/"drop"/"deny") as the CEF Name.
+`_gp_classic_log` generates a 50-field CSV matching the PAN-OS GlobalProtect syslog schema. Key fields: Event ID (field 9), Stage (10: before-login/login/tunnel), Auth Method (11), Tunnel Type (12), Public/Private IP (16/18), Host ID (20), Client OS/Version (23/24), Status (29), High Res Timestamp (37), Gateway Selection Type (38), Gateway (42). Works with `--format rfc5424` or `--format rfc3164`.
 
-**globalprotect** (`_gp_log`): generates `msg_id="GLOBALPROTECT"`. Stages: `connected`, `disconnected`, `login`, `auth-error`. Stage-specific fields appended conditionally (`PanOSTunnelType`, `PanOSGateway`, `PanOSPrivateIPv4`, `PanOSLoginDuration`, `PanOSConnectionError`).
+## SLS CEF log types (sls-globalprotect, sls-traffic)
+
+Both types require `--format cef`. Generators pre-build the full `CEF:0|...|extension` string as `msg.message`; the CEF formatter wraps it in an RFC 5424 envelope with `hostname=logfwd20-{uuid}-taskmanager-{5char}`, `app_name=logforwarder`, `msgid=panwlogs`, `facility=1` (user).
+
+**sls-globalprotect** (`_sls_gp_log`): generates `msg_id="GLOBALPROTECT"`. Stages: `connected`, `disconnected`, `login`, `auth-error`. Stage-specific fields appended conditionally (`PanOSTunnelType`, `PanOSGateway`, `PanOSPrivateIPv4`, `PanOSLoginDuration`, `PanOSConnectionError`).
 
 **sls-traffic** (`_sls_traffic_log`): generates `msg_id="TRAFFIC"`. Sub-types: `end` (most common), `start`, `drop`, `deny`. Drop/deny traffic gets zeroed bytes/packets, `reason=policy-deny`, and sometimes `app=not-applicable`. App category/subcategory/risk come from `_APP_CATEGORY` dict; includes NAT fields (30% probability), `PanOSRuleUUID`, `PanOSPanoramaSN`, and all csX/cnX labelled fields.
 
