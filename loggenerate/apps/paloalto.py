@@ -18,19 +18,28 @@ from loggenerate.utils import (
     rand_bytes_pair, rand_packets_pair, pan_timestamp,
 )
 
-_SERIALS = ["012345678901", "123456789012", "PA1234567890", "987654321098"]
+_SERIALS = ["012345678901", "123456789012", "PA1234567890", "987654321098", "010108002034"]
 _HOSTNAMES = ["PA-FW1", "PA-FW2", "PA-3260", "PA-VM50", "PA-EDGE-01"]
+_DEVICE_NAMES = [
+    "PNG-PFW-001", "PNG-PFW-005", "PA-FW1", "PA-FW2",
+    "PA-EDGE-01", "PA-DC-FW01", "PA-FW-CORE-01",
+]
 _RULES = [
     "allow-trusted-outbound", "deny-inbound-default",
     "allow-dmz-web", "vpn-split-tunnel", "block-known-bad",
     "allow-guest-internet", "allow-internal-east-west",
+    "interzone-default",
 ]
 _INTERFACES = [
     "ethernet1/1", "ethernet1/2", "ethernet1/3",
-    "ae1.100", "ae1.200", "tunnel.1",
+    "ae1.100", "ae1.200", "ae3.3295", "ae3.3296", "tunnel.1",
 ]
-_ZONES = ["trust", "untrust", "dmz", "vpn", "guest", "mgmt"]
-_VSYS = ["vsys1", "vsys2"]
+_ZONES = [
+    "trust", "untrust", "dmz", "vpn", "guest", "mgmt",
+    "L3-Trust", "L3-Untrust", "L3-dmz", "L3-dmz-secaas",
+    "L3-guest-wifi", "external", "internal",
+]
+_VSYS = ["vsys1", "vsys2", "vsys3", "vsys4", "vsys12"]
 _LOG_ACTIONS = ["Syslog-Forward", "Panorama", "log-forward"]
 _PROTOCOLS = ["tcp", "udp", "icmp"]
 _ACTIONS = ["allow", "deny", "drop", "reset-client", "reset-server"]
@@ -67,23 +76,40 @@ _SYSTEM_EVENTS = [
 
 
 def _traffic_log(dt, serial, src_ip, dst_ip, src_port, dst_port) -> tuple:
-    """Returns (severity, message_body)."""
-    in_iface = random.choice(_INTERFACES[:4])
-    out_iface = random.choice(_INTERFACES[:4])
+    """Returns (severity, message_body, app_name)."""
+    in_iface = random.choice(_INTERFACES)
+    out_iface = random.choice(_INTERFACES)
     rule = random.choice(_RULES)
-    src_zone = random.choice(["trust", "internal", "dmz", "vpn"])
-    dst_zone = random.choice(["untrust", "external", "dmz"])
-    app = rand_application()
+    src_zone = random.choice(["trust", "internal", "dmz", "vpn", "L3-Trust", "L3-dmz-secaas"])
+    dst_zone = random.choice(["untrust", "external", "dmz", "L3-Untrust", "L3-dmz"])
     proto = random.choice(_PROTOCOLS)
     action = random.choice(_ACTIONS)
+
+    # Dropped/denied traffic often has no identified application
+    if action in ("drop", "deny") and random.random() < 0.4:
+        app = "not-applicable"
+        category = "any"
+    else:
+        app = rand_application()
+        category = random.choice(_URL_CATEGORIES)
+
     sent, recv = rand_bytes_pair()
     sent_pkts, recv_pkts = rand_packets_pair()
     elapsed = random.randint(1, 600)
     session_id = random.randint(10_000, 9_999_999)
     seq = random.randint(1_000_000_000, 9_999_999_999)
 
+    hires_ts = dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}+00:00"
+    extended = (
+        ["", "", "", "", ""]        # DGH hierarchy levels 1-4 + vsys name
+        + [random.choice(_DEVICE_NAMES)]  # Device Name (PAN-OS field 53)
+        + [""] * 50                 # PAN-OS fields 54-103
+        + [hires_ts]                # high-res receive time (PAN-OS field 104)
+        + [""] * 14                 # trailing fields 105-118
+    )
+
     fields = [
-        "1",                                    # Domain
+        "1",                                    # FUTURE_USE
         pan_timestamp(dt),                       # Receive Time
         serial,                                  # Serial Number
         "TRAFFIC",                               # Type
@@ -120,7 +146,7 @@ def _traffic_log(dt, serial, src_ip, dst_ip, src_port, dst_port) -> tuple:
         str(sent_pkts + recv_pkts),             # Packets
         pan_timestamp(dt),                       # Start Time
         str(elapsed),                            # Elapsed Time
-        random.choice(_URL_CATEGORIES),          # Category
+        category,                                # Category
         "0",                                     # FUTURE_USE
         str(seq),                                # Sequence Number
         "0x0",                                   # Action Flags
@@ -130,12 +156,12 @@ def _traffic_log(dt, serial, src_ip, dst_ip, src_port, dst_port) -> tuple:
         str(sent_pkts),                          # Packets Sent
         str(recv_pkts),                          # Packets Received
         random.choice(_SESSION_END_REASONS),     # Session End Reason
-    ]
-    return 6, ",".join(fields)  # severity=info
+    ] + extended
+    return 6, ",".join(fields), app
 
 
 def _threat_log(dt, serial, src_ip, dst_ip, src_port, dst_port) -> tuple:
-    """Returns (severity, message_body)."""
+    """Returns (severity, message_body, app_name)."""
     in_iface = random.choice(_INTERFACES[:4])
     out_iface = random.choice(_INTERFACES[:4])
     rule = random.choice(_RULES)
@@ -201,7 +227,7 @@ def _threat_log(dt, serial, src_ip, dst_ip, src_port, dst_port) -> tuple:
         "",                        # Referer
     ]
     sev = 4 if threat_sev in ("high", "critical") else 5
-    return sev, ",".join(fields)
+    return sev, ",".join(fields), app
 
 
 def _system_log(dt, serial) -> tuple:
@@ -297,7 +323,12 @@ class PaloAltoGenerator(BaseAppGenerator):
                 f"Unknown PAN-OS log type '{log_type}'. Choices: {', '.join(self.LOG_TYPES)}"
             )
 
-        default_sev, body = generators[log_type]()
+        result = generators[log_type]()
+        if log_type in ("traffic", "threat"):
+            default_sev, body, body_app = result
+        else:
+            default_sev, body = result
+            body_app = None
         sev = severity if severity is not None else default_sev
 
         # Structured data mirrors the most useful CSV fields for RFC 5424 consumers
@@ -308,7 +339,7 @@ class PaloAltoGenerator(BaseAppGenerator):
                     "type": log_type.upper(),
                     "src": src_ip,
                     "dst": dst_ip,
-                    "app": rand_application(),
+                    "app": body_app,
                 }
             }
 
