@@ -11,8 +11,9 @@ python3 -m loggenerate --app paloalto --log-type traffic --format rfc3164 --coun
 python3 -m loggenerate --app f5 --log-type ltm --count 5
 python3 -m loggenerate --app fortinet --log-type utm --count 5
 
-# GlobalProtect CEF (Strata Logging Service format)
+# Strata Logging Service (SLS) CEF log types
 python3 -m loggenerate --app paloalto --log-type globalprotect --format cef --count 5
+python3 -m loggenerate --app paloalto --log-type sls-traffic --format cef --count 5
 
 # Reproducible output
 python3 -m loggenerate --app paloalto --count 3 --seed 42
@@ -55,9 +56,13 @@ All randomised primitives live here: IP pools, application names, user names, po
 2. Register it in `loggenerate/apps/__init__.py` under `_GENERATORS`.
 3. Add `--app` choice in `cli.py`'s `build_parser()`.
 
-## GlobalProtect CEF notes
+## SLS CEF log types (globalprotect, sls-traffic)
 
-GlobalProtect events use `--format cef` and `--log-type globalprotect`. The generator sets `app_name="LF"` (Strata Logging Service) and `msg_id="GLOBALPROTECT"` so the CEF header reads `CEF:0|Palo Alto Networks|LF|2.0|GLOBALPROTECT|globalprotect|…`. The extension is pre-built in `_gp_log()` as a space-separated key=value string per the SLS CEF field reference. Stages generated: `connected`, `disconnected`, `login`, `auth-error` — stage-specific fields (`PanOSTunnelType`, `PanOSGateway`, `PanOSPrivateIPv4`, `PanOSLoginDuration`, `PanOSConnectionError`) are appended only for the relevant stage. Backslashes in `suser` (e.g. `corp\alice`) are escaped to `\\` per CEF spec.
+Both types set `app_name="LF"` and use `--format cef`. The CEF formatter builds the header as `CEF:0|Palo Alto Networks|LF|2.0|{msg_id}|{name}|{sev}|{extension}`. The `name` field in the header (the 6th pipe-delimited field) defaults to `msg_id.lower()` but can be overridden via `structured_data["_cef"]["name"]` — used by `sls-traffic` to set the sub_type ("end"/"start"/"drop"/"deny") as the CEF Name.
+
+**globalprotect** (`_gp_log`): generates `msg_id="GLOBALPROTECT"`. Stages: `connected`, `disconnected`, `login`, `auth-error`. Stage-specific fields appended conditionally (`PanOSTunnelType`, `PanOSGateway`, `PanOSPrivateIPv4`, `PanOSLoginDuration`, `PanOSConnectionError`).
+
+**sls-traffic** (`_sls_traffic_log`): generates `msg_id="TRAFFIC"`. Sub-types: `end` (most common), `start`, `drop`, `deny`. Drop/deny traffic gets zeroed bytes/packets, `reason=policy-deny`, and sometimes `app=not-applicable`. App category/subcategory/risk come from `_APP_CATEGORY` dict; includes NAT fields (30% probability), `PanOSRuleUUID`, `PanOSPanoramaSN`, and all csX/cnX labelled fields.
 
 ## PAN-OS CSV field notes
 

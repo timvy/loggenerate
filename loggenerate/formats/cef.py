@@ -10,13 +10,16 @@ def _escape_header(v: str) -> str:
 def format_message(msg: SyslogMessage) -> str:
     """
     CEF:0|Vendor|Product|Version|EventClassID|Name|Severity|Extension
-    msg.app_name   → Device Product  (e.g. "LF" for Strata Logging Service)
-    msg.msg_id     → Device Event Class ID  (e.g. "GLOBALPROTECT")
-    msg.message    → pre-built extension key=value string (built by the generator)
+    msg.app_name            → Device Product  (e.g. "LF" for Strata Logging Service)
+    msg.msg_id              → Device Event Class ID  (e.g. "TRAFFIC", "GLOBALPROTECT")
+    msg.structured_data     → optional {"_cef": {"name": "end"}} overrides the header Name
+                              field (sub_type); defaults to msg_id.lower()
+    msg.message             → pre-built extension key=value string (built by the generator)
     """
     cef_sev = _SYSLOG_TO_CEF_SEV.get(msg.severity, 3)
     vendor = _escape_header("Palo Alto Networks")
     product = _escape_header(msg.app_name or "LF")
     event_class = _escape_header(msg.msg_id or "-")
-    name = _escape_header((msg.msg_id or "-").lower())
+    name_override = msg.structured_data.get("_cef", {}).get("name")
+    name = _escape_header(name_override or (msg.msg_id or "-").lower())
     return f"CEF:0|{vendor}|{product}|2.0|{event_class}|{name}|{cef_sev}|{msg.message}"

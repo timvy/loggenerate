@@ -48,6 +48,44 @@ _SESSION_END_REASONS = [
     "tcp-rst-from-client", "tcp-rst-from-server",
     "resources-unavailable",
 ]
+# (app_category, app_subcategory, risk_1_to_5)
+_APP_CATEGORY = {
+    "ssl":             ("networking",        "encrypted-tunnel",   2),
+    "http":            ("general-internet",  "web-browsing",       3),
+    "dns":             ("networking",        "infrastructure",     2),
+    "smtp":            ("collaboration",     "email",              3),
+    "ssh":             ("networking",        "remote-access",      2),
+    "ftp":             ("general-internet",  "file-sharing",       4),
+    "rdp":             ("business-systems",  "remote-access",      4),
+    "office365":       ("business-systems",  "office-programs",    2),
+    "msrpc":           ("business-systems",  "general",            3),
+    "netbios-ns":      ("networking",        "infrastructure",     3),
+    "dropbox":         ("general-internet",  "file-sharing",       3),
+    "youtube":         ("media",             "streaming-media",    2),
+    "facebook":        ("social-networking", "social-networking",  3),
+    "instagram":       ("social-networking", "photo-video",        3),
+    "linkedin":        ("social-networking", "social-networking",  2),
+    "sharepoint":      ("business-systems",  "content-delivery",   2),
+    "teams":           ("collaboration",     "video-conferencing", 2),
+    "zoom":            ("collaboration",     "video-conferencing", 2),
+    "webex":           ("collaboration",     "video-conferencing", 2),
+    "slack":           ("collaboration",     "instant-messaging",  2),
+    "ntp":             ("networking",        "infrastructure",     1),
+    "snmp":            ("networking",        "infrastructure",     3),
+    "ldap":            ("business-systems",  "auth-service",       3),
+    "kerberos":        ("business-systems",  "auth-service",       2),
+    "quic":            ("networking",        "encrypted-tunnel",   2),
+    "splunk":          ("business-systems",  "data-analytics",     2),
+    "syslog":          ("networking",        "infrastructure",     2),
+    "sap":             ("business-systems",  "erp",                3),
+    "oracle-database": ("business-systems",  "database",           3),
+    "not-applicable":  ("unknown",           "unknown",            2),
+}
+_APP_CATEGORY_DEFAULT = ("unknown", "unknown", 2)
+
+_PANORAMA_SERIALS = ["001234567890", "001234567891", "PA-PAN-SRV-01"]
+_LOG_PROFILES = ["default", "prod-logs", "sec-ops-logs", "Panorama"]
+
 _GP_PORTALS = ["corp-portal", "remote-portal", "vpn-portal", "staff-portal"]
 _GP_GATEWAYS = [
     "us-west-gw", "us-east-gw", "eu-central-gw", "apac-gw",
@@ -318,6 +356,145 @@ def _config_log(dt, serial) -> tuple:
     return 5, ",".join(fields)
 
 
+def _sls_traffic_log(dt, serial, hostname, src_ip, dst_ip, src_port, dst_port) -> tuple:
+    """Returns (severity, cef_extension_string, sub_type).
+
+    Generates a TRAFFIC event in Strata Logging Service CEF extension format.
+    Reference: https://docs.paloaltonetworks.com/strata-logging-service/log-reference/
+               network-logs/network-traffic-log/network-traffic-cef-fields
+    """
+    subtype = random.choice(["end", "end", "start", "drop", "deny"])
+    action = subtype if subtype in ("drop", "deny") else "allow"
+    sev = 4 if action != "allow" else 6
+
+    if subtype in ("drop", "deny") and random.random() < 0.4:
+        app = "not-applicable"
+        url_cat = "any"
+    else:
+        app = rand_application()
+        url_cat = random.choice(_URL_CATEGORIES)
+    app_cat, app_subcat, app_risk = _APP_CATEGORY.get(app, _APP_CATEGORY_DEFAULT)
+
+    rule = random.choice(_RULES)
+    src_zone = random.choice(["trust", "internal", "L3-Trust", "L3-dmz-secaas", "vpn"])
+    dst_zone = random.choice(["untrust", "external", "L3-Untrust"])
+    in_iface = random.choice(_INTERFACES)
+    out_iface = random.choice(_INTERFACES)
+    proto = random.choice(_PROTOCOLS)
+    vsys = random.choice(_VSYS)
+
+    if subtype in ("drop", "deny"):
+        sent, recv = 0, 0
+        sent_pkts, recv_pkts = 1, 0
+        elapsed = 0
+        session_end_reason = "policy-deny"
+    else:
+        sent, recv = rand_bytes_pair()
+        sent_pkts, recv_pkts = rand_packets_pair()
+        elapsed = random.randint(1, 600)
+        session_end_reason = (
+            random.choice(["aged-out", "tcp-fin", "tcp-rst-from-client", "tcp-rst-from-server"])
+            if subtype == "end" else ""
+        )
+
+    session_id = random.randint(10_000, 9_999_999)
+    seq = random.randint(1_000_000_000, 9_999_999_999)
+
+    is_nat = random.random() < 0.3
+    nat_src = rand_private_ip() if is_nat else "0.0.0.0"
+    nat_sport = str(random.randint(1024, 65535)) if is_nat else "0"
+
+    user = rand_user("corp")
+    user_domain, user_name = user.split("\\", 1) if "\\" in user else ("", user)
+
+    tenant_id = "".join(random.choices("0123456789abcdef", k=16))
+    rule_uuid = (
+        f"{random.randint(0, 0xffffffff):08x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffff):04x}-"
+        f"{random.randint(0, 0xffffffffffff):012x}"
+    )
+    profile_token = "".join(random.choices(
+        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", k=24,
+    ))
+    hires_ts = dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}+00:00"
+    cef_ts = dt.strftime("%b %d %Y %H:%M:%S")
+
+    def p(k, v):
+        esc = str(v).replace("\\", "\\\\").replace("=", "\\=").replace("\n", "\\n")
+        return f"{k}={esc}"
+
+    fields = [
+        p("ProfileToken", profile_token),
+        "dtz=UTC",
+        p("rt", cef_ts),
+        p("deviceExternalId", serial),
+        p("PanOSDGHierarchyLevel1", random.randint(100, 9999)),
+        "PanOSDGHierarchyLevel2=0",
+        "PanOSDGHierarchyLevel3=0",
+        "PanOSDGHierarchyLevel4=0",
+        p("dvchost", hostname),
+        p("cs3", vsys),
+        "cs3Label=Virtual System",
+        p("PanOSVirtualSystemName", vsys),
+        p("cs1", rule),
+        "cs1Label=Rule Name",
+        p("cs4", src_zone),
+        "cs4Label=Source Zone",
+        p("cs5", dst_zone),
+        "cs5Label=Destination Zone",
+        p("cs6", random.choice(_LOG_PROFILES)),
+        "cs6Label=Log Profile",
+        p("start", cef_ts),
+        p("PanOSTimeGeneratedHighResolution", hires_ts),
+        p("src", src_ip),
+        p("dst", dst_ip),
+        p("spt", src_port),
+        p("dpt", dst_port),
+        p("suser", user),
+        p("sntdom", user_domain),
+        p("susername", user_name),
+        p("proto", proto),
+        p("app", app),
+        p("act", action),
+        "FlowType=flow",
+        p("Name", subtype),
+        p("reason", session_end_reason),
+        p("in", recv),
+        p("out", sent),
+        p("PanOSBytes", sent + recv),
+        p("cn1", session_id),
+        "cn1Label=Session ID",
+        p("cn2", sent_pkts + recv_pkts),
+        "cn2Label=Total Packets",
+        p("PanOSPacketsSent", sent_pkts),
+        p("PanOSPacketsReceived", recv_pkts),
+        p("cn3", elapsed),
+        "cn3Label=Elapsed Time in Seconds",
+        p("externalId", seq),
+        p("deviceInboundInterface", in_iface),
+        p("deviceOutboundInterface", out_iface),
+        "PanOSSourceLocation=Reserved",
+        p("PanOSDestinationLocation", rand_country()),
+        p("cs2", url_cat),
+        "cs2Label=URL Category",
+        p("PanOSApplicationCategory", app_cat),
+        p("PanOSApplicationSubcategory", app_subcat),
+        p("PanOSApplicationRisk", app_risk),
+        p("sourceTranslatedAddress", nat_src),
+        "destinationTranslatedAddress=0.0.0.0",
+        p("sourceTranslatedPort", nat_sport),
+        "destinationTranslatedPort=0",
+        p("PanOSNAT", "true" if is_nat else "false"),
+        p("PanOSCortexDataLakeTenantID", tenant_id),
+        p("PanOSPanoramaSN", random.choice(_PANORAMA_SERIALS)),
+        p("PanOSRuleUUID", rule_uuid),
+        "PanOSLogSource=firewall",
+    ]
+    return sev, " ".join(fields), subtype
+
+
 def _gp_log(dt, serial, hostname) -> tuple:
     """Returns (severity, cef_extension_string).
 
@@ -417,7 +594,7 @@ def _gp_log(dt, serial, hostname) -> tuple:
 
 
 class PaloAltoGenerator(BaseAppGenerator):
-    LOG_TYPES = ["traffic", "threat", "system", "config", "globalprotect"]
+    LOG_TYPES = ["traffic", "threat", "system", "config", "globalprotect", "sls-traffic"]
 
     def generate(
         self,
@@ -443,6 +620,7 @@ class PaloAltoGenerator(BaseAppGenerator):
             "system":        lambda: _system_log(dt, serial),
             "config":        lambda: _config_log(dt, serial),
             "globalprotect": lambda: _gp_log(dt, serial, host),
+            "sls-traffic":   lambda: _sls_traffic_log(dt, serial, host, src_ip, dst_ip, src_port, dst_port),
         }
         if log_type not in generators:
             raise ValueError(
@@ -450,16 +628,11 @@ class PaloAltoGenerator(BaseAppGenerator):
             )
 
         result = generators[log_type]()
+        body_app = None
+        sd = {}
+
         if log_type in ("traffic", "threat"):
             default_sev, body, body_app = result
-        else:
-            default_sev, body = result
-            body_app = None
-        sev = severity if severity is not None else default_sev
-
-        # Structured data for RFC 5424 consumers; not used for CEF (extension carries this)
-        sd = {}
-        if log_type in ("traffic", "threat"):
             sd = {
                 "pan@2773": {
                     "type": log_type.upper(),
@@ -468,9 +641,17 @@ class PaloAltoGenerator(BaseAppGenerator):
                     "app": body_app,
                 }
             }
+        elif log_type == "sls-traffic":
+            default_sev, body, subtype = result
+            sd = {"_cef": {"name": subtype}}
+        else:
+            default_sev, body = result
 
-        # GlobalProtect logs originate from Strata Logging Service, not PAN-OS directly
-        app_name_val = "LF" if log_type == "globalprotect" else "PAN-OS"
+        sev = severity if severity is not None else default_sev
+
+        # SLS log types originate from Strata Logging Service, not PAN-OS directly
+        app_name_val = "LF" if log_type in ("globalprotect", "sls-traffic") else "PAN-OS"
+        msg_id_val = "TRAFFIC" if log_type == "sls-traffic" else log_type.upper()
 
         return SyslogMessage(
             facility=fac,
@@ -479,7 +660,7 @@ class PaloAltoGenerator(BaseAppGenerator):
             hostname=host,
             app_name=app_name_val,
             proc_id="-",
-            msg_id=log_type.upper(),
+            msg_id=msg_id_val,
             structured_data=sd,
             message=body,
         )

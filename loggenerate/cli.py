@@ -37,8 +37,9 @@ Supported log types per application:
   f5        — ltm, asm, apm
   fortinet  — traffic, utm, event
 
-GlobalProtect CEF example (Strata Logging Service format):
+Strata Logging Service (SLS) CEF log types — use with --format cef:
   python -m loggenerate --app paloalto --log-type globalprotect --format cef --count 5
+  python -m loggenerate --app paloalto --log-type sls-traffic --format cef --count 5
 
 Syslog facilities (--facility):
   0=kern  1=user  2=mail  3=daemon  4=auth  5=syslog
